@@ -1,4 +1,5 @@
-from main import SessionLocal, PurchaseOrder
+from app.db.session import SessionLocal
+from app.db.models import PurchaseOrder
 from datetime import date
 
 def init_database():

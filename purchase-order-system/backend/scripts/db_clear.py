@@ -2,7 +2,8 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from main import SessionLocal, PurchaseOrder
+from app.db.session import SessionLocal
+from app.db.models import PurchaseOrder
 from sqlalchemy import func
 
 def clear_database():

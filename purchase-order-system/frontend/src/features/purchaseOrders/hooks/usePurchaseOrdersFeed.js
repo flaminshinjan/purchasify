@@ -44,6 +44,88 @@ const usePurchaseOrdersFeed = ({ pageSize = 50 } = {}) => {
     setHasMore(Boolean(page.has_more && page.next_cursor));
   }, []);
 
+  const upsertOrder = useCallback((order, { position = 'end' } = {}) => {
+    if (!order) {
+      return;
+    }
+
+    setItems((prev) => {
+      const existingIndex = prev.findIndex((item) => item.id === order.id);
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        next[existingIndex] = order;
+        return next;
+      }
+
+      if (position === 'start') {
+        return [order, ...prev];
+      }
+
+      if (position === 'end') {
+        return [...prev, order];
+      }
+
+      if (typeof position === 'number' && position >= 0) {
+        const next = [...prev];
+        next.splice(Math.min(position, next.length), 0, order);
+        return next;
+      }
+
+      return [...prev, order];
+    });
+
+    cacheRef.current = new Map(
+      Array.from(cacheRef.current.entries()).map(([key, page]) => {
+        if (!page) {
+          return [key, page];
+        }
+
+        const existingIndex = page.items.findIndex((item) => item.id === order.id);
+        if (existingIndex >= 0) {
+          const updatedItems = [...page.items];
+          updatedItems[existingIndex] = order;
+          return [key, { ...page, items: updatedItems }];
+        }
+
+        if (key === INITIAL_CURSOR_KEY) {
+          if (position === 'start') {
+            return [
+              key,
+              {
+                ...page,
+                items: [order, ...page.items],
+              },
+            ];
+          }
+
+          if (typeof position === 'number' && position >= 0) {
+            const nextItems = [...page.items];
+            nextItems.splice(Math.min(position, nextItems.length), 0, order);
+            return [
+              key,
+              {
+                ...page,
+                items: nextItems,
+              },
+            ];
+          }
+        }
+
+        if (position === 'end') {
+          return [
+            key,
+            {
+              ...page,
+              items: [...page.items, order],
+            },
+          ];
+        }
+
+        return [key, page];
+      }),
+    );
+  }, []);
+
   const fetchPage = useCallback(
     async (cursor, { append, force = false } = {}) => {
       const cacheKey = cursor ?? INITIAL_CURSOR_KEY;
@@ -127,6 +209,7 @@ const usePurchaseOrdersFeed = ({ pageSize = 50 } = {}) => {
       hasMore,
       prefetchNext,
       removeOrder,
+      upsertOrder,
       reset,
       setError,
     }),
@@ -138,6 +221,7 @@ const usePurchaseOrdersFeed = ({ pageSize = 50 } = {}) => {
       hasMore,
       prefetchNext,
       removeOrder,
+      upsertOrder,
       reset,
     ],
   );

@@ -15,6 +15,8 @@ const PurchaseOrderCard = ({
   onRemovalAnimationComplete,
   onSelect = () => {},
   isActive = false,
+  isFocused = false,
+  cardId,
 }) => {
   const status = useMemo(() => {
     const statusKey = getOrderStatus(order);
@@ -35,6 +37,12 @@ const PurchaseOrderCard = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isActionActive, setIsActionActive] = useState(false);
   const [isAnimatingOut, setIsAnimatingOut] = useState(false);
+
+  useEffect(() => {
+    if (isFocused && cardRef.current) {
+      cardRef.current.focus({ preventScroll: true });
+    }
+  }, [isFocused]);
 
   const clampDragX = useCallback((value) => {
     if (value > 0) {
@@ -242,9 +250,12 @@ const PurchaseOrderCard = ({
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         handleSelect();
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        onDeleteRequest(order);
       }
     },
-    [handleSelect],
+    [handleSelect, onDeleteRequest, order],
   );
 
   const iconClass =
@@ -311,7 +322,9 @@ const PurchaseOrderCard = ({
           isAnimatingOut || isRemoving
             ? 'pointer-events-none opacity-0'
             : 'opacity-100'
-        } ${isActive ? 'ring-2 ring-neutral-900/10 dark:ring-neutral-100/20' : ''}`}
+        } ${isActive ? 'ring-2 ring-neutral-900/10 dark:ring-neutral-100/20' : ''} ${
+          isFocused ? 'outline-none ring-2 ring-neutral-900/30 dark:ring-neutral-100/20' : ''
+        } ${order.__optimistic ? 'opacity-90' : ''}`}
         style={{
           transform: `translateX(${dragX}px)`,
           transition: isDragging
@@ -320,8 +333,12 @@ const PurchaseOrderCard = ({
         }}
         onClick={handleSelect}
         onKeyDown={handleKeyDown}
-        role="button"
-        tabIndex={0}
+        role="option"
+        tabIndex={isFocused ? 0 : -1}
+        aria-selected={isFocused}
+        aria-busy={order.__optimistic ? 'true' : undefined}
+        data-order-id={order.id}
+        id={cardId}
       >
         <header className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -338,14 +355,11 @@ const PurchaseOrderCard = ({
             >
               {status.label}
             </span>
-            <button
-              type="button"
-              onClick={handleDetailsButtonClick}
-              onPointerDown={(event) => event.stopPropagation()}
-              className="inline-flex items-center gap-2 rounded-full border border-neutral-200 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-600 transition-colors duration-200 hover:border-neutral-400 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-600 dark:focus-visible:ring-offset-neutral-900"
-            >
-              View Details
-            </button>
+            {order.__optimistic ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-300/70 bg-amber-100/70 px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700 transition-colors duration-200 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
+                Syncing…
+              </span>
+            ) : null}
           </div>
         </header>
 
@@ -391,10 +405,18 @@ const PurchaseOrderCard = ({
           </dl>
         </section>
 
-        <footer className="mt-auto flex items-center justify-between pt-5">
-          <span className="justify-between text-[11px] font-semibold uppercase tracking-wide text-neutral-400 transition-colors duration-300 dark:text-neutral-600">
+        <footer className="mt-auto flex items-center justify-between gap-3 pt-5">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-neutral-400 transition-colors duration-300 dark:text-neutral-600">
             Swipe left to delete
           </span>
+          <button
+            type="button"
+            onClick={handleDetailsButtonClick}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="inline-flex items-center gap-2 rounded-full border border-neutral-200 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-600 transition-colors duration-200 hover:border-neutral-400 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-neutral-700 dark:text-neutral-300 dark:hover:border-neutral-500 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-600 dark:focus-visible:ring-offset-neutral-900"
+          >
+            View Details
+          </button>
         </footer>
       </article>
     </div>

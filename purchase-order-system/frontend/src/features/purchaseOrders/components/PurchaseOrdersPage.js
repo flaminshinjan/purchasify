@@ -24,6 +24,31 @@ const INITIAL_FORM_STATE = {
   unit_price: '',
 };
 
+const SORT_OPTIONS = [
+  { value: 'order_date_desc', label: 'Order Date · Newest' },
+  { value: 'order_date_asc', label: 'Order Date · Oldest' },
+  { value: 'delivery_date_asc', label: 'Delivery Date · Soonest' },
+  { value: 'total_price_desc', label: 'Total Value · High' },
+  { value: 'total_price_asc', label: 'Total Value · Low' },
+  { value: 'status', label: 'Status' },
+];
+
+const STATUS_FILTER_OPTIONS = ['all', ORDER_STATUS.DELIVERED, ORDER_STATUS.IN_PROCESS, ORDER_STATUS.UPCOMING];
+
+const STATUS_SORT_PRIORITY = {
+  [ORDER_STATUS.IN_PROCESS]: 0,
+  [ORDER_STATUS.UPCOMING]: 1,
+  [ORDER_STATUS.DELIVERED]: 2,
+  [ORDER_STATUS.SCHEDULED]: 3,
+};
+
+const STATUS_LABELS = {
+  all: 'All statuses',
+  [ORDER_STATUS.DELIVERED]: 'Delivered',
+  [ORDER_STATUS.IN_PROCESS]: 'In Process',
+  [ORDER_STATUS.UPCOMING]: 'Upcoming',
+};
+
 const PurchaseOrdersPage = () => {
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState(INITIAL_FORM_STATE);
@@ -38,9 +63,15 @@ const PurchaseOrdersPage = () => {
   const [toast, setToast] = useState(null);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortOption, setSortOption] = useState(SORT_OPTIONS[0].value);
+  const [focusedOrderId, setFocusedOrderId] = useState(null);
   const scrollContainerRef = useRef(null);
   const headerSentinelRef = useRef(null);
   const closeDetailsTimeoutRef = useRef(null);
+  const optimisticRemovalsRef = useRef(new Map());
 
   useEffect(() => {
     if (process.env.NODE_ENV !== 'production') {
@@ -56,6 +87,14 @@ const PurchaseOrdersPage = () => {
         });
     }
   }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm.trim());
+    }, 260);
+
+    return () => window.clearTimeout(timeout);
+  }, [searchTerm]);
 
   useEffect(() => {
     const sentinel = headerSentinelRef.current;
@@ -86,16 +125,83 @@ const PurchaseOrdersPage = () => {
     hasMore,
     prefetchNext,
     removeOrder,
-    reset,
+    upsertOrder,
     setError: setFeedError,
   } = usePurchaseOrdersFeed({
     pageSize: 60,
   });
 
   const activeError = uiError || feedError;
+  const isFiltering = debouncedSearchTerm.length > 0 || statusFilter !== 'all';
+
+  const filteredOrders = useMemo(() => {
+    if (orders.length === 0) {
+      return orders;
+    }
+
+    const query = debouncedSearchTerm.trim().toLowerCase();
+
+    return orders.filter((order) => {
+      const matchesQuery =
+        query.length === 0 ||
+        String(order.item_name ?? '')
+          .toLowerCase()
+          .includes(query) ||
+        String(order.id ?? '')
+          .toLowerCase()
+          .includes(query);
+
+      if (!matchesQuery) {
+        return false;
+      }
+
+      if (statusFilter === 'all') {
+        return true;
+      }
+
+      return getOrderStatus(order) === statusFilter;
+    });
+  }, [debouncedSearchTerm, orders, statusFilter]);
+
+  const displayOrders = useMemo(() => {
+    if (filteredOrders.length <= 1) {
+      return filteredOrders;
+    }
+
+    const toTimestamp = (value) => {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+    };
+
+    const next = [...filteredOrders];
+
+    next.sort((a, b) => {
+      switch (sortOption) {
+        case 'order_date_asc':
+          return toTimestamp(a.order_date) - toTimestamp(b.order_date);
+        case 'order_date_desc':
+          return toTimestamp(b.order_date) - toTimestamp(a.order_date);
+        case 'delivery_date_asc':
+          return toTimestamp(a.delivery_date) - toTimestamp(b.delivery_date);
+        case 'total_price_asc':
+          return Number(a.total_price ?? 0) - Number(b.total_price ?? 0);
+        case 'total_price_desc':
+          return Number(b.total_price ?? 0) - Number(a.total_price ?? 0);
+        case 'status':
+          return (
+            (STATUS_SORT_PRIORITY[getOrderStatus(a)] ?? 0) -
+            (STATUS_SORT_PRIORITY[getOrderStatus(b)] ?? 0)
+          );
+        default:
+          return 0;
+      }
+    });
+
+    return next;
+  }, [filteredOrders, sortOption]);
 
   const metrics = useMemo(() => {
-    if (!orders.length) {
+    if (!filteredOrders.length) {
       return {
         totalOrders: 0,
         totalValue: 0,
@@ -110,7 +216,7 @@ const PurchaseOrdersPage = () => {
     let inProcess = 0;
     let upcoming = 0;
 
-    orders.forEach((order) => {
+    filteredOrders.forEach((order) => {
       totalValue += Number(order.total_price ?? 0);
       const status = getOrderStatus(order);
 
@@ -130,7 +236,24 @@ const PurchaseOrdersPage = () => {
       inProcess,
       upcoming,
     };
-  }, [orders]);
+  }, [filteredOrders]);
+
+  const isDefaultSort = sortOption === SORT_OPTIONS[0].value;
+  const shouldShowResetView = isFiltering || !isDefaultSort;
+
+  useEffect(() => {
+    if (!displayOrders.length) {
+      setFocusedOrderId(null);
+      return;
+    }
+
+    setFocusedOrderId((previous) => {
+      if (previous && displayOrders.some((order) => order.id === previous)) {
+        return previous;
+      }
+      return displayOrders[0].id;
+    });
+  }, [displayOrders]);
 
   const handleInputChange = (event) => {
     const { name, value } = event.target;
@@ -140,23 +263,64 @@ const PurchaseOrdersPage = () => {
     }));
   };
 
+  const handleSearchChange = useCallback((event) => {
+    setSearchTerm(event.target.value);
+  }, []);
+
+  const handleStatusFilterChange = useCallback((event) => {
+    setStatusFilter(event.target.value);
+    setFocusedOrderId(null);
+  }, []);
+
+  const handleSortChange = useCallback((event) => {
+    setSortOption(event.target.value);
+  }, []);
+
+  const handleResetFilters = useCallback(() => {
+    setSearchTerm('');
+    setDebouncedSearchTerm('');
+    setStatusFilter('all');
+    setSortOption(SORT_OPTIONS[0].value);
+    setFocusedOrderId(null);
+  }, []);
+
   const handleCreate = async (event) => {
     event.preventDefault();
     setUiError(null);
     setFeedError(null);
 
+    const quantity = Number.parseInt(formData.quantity, 10) || 0;
+    const unitPrice = Number.parseFloat(formData.unit_price) || 0;
+    const optimisticId = `temp-${Date.now()}`;
+    const optimisticOrder = {
+      id: optimisticId,
+      item_name: formData.item_name || 'New purchase order',
+      order_date: formData.order_date || new Date().toISOString(),
+      delivery_date: formData.delivery_date || formData.order_date || new Date().toISOString(),
+      quantity,
+      unit_price: unitPrice,
+      total_price: quantity * unitPrice,
+      __optimistic: true,
+    };
+
+    upsertOrder(optimisticOrder, { position: 'start' });
+    setFocusedOrderId(optimisticId);
+
     try {
-      await createPurchaseOrder({
+      const createdOrder = await createPurchaseOrder({
         ...formData,
-        quantity: parseInt(formData.quantity, 10),
-        unit_price: parseFloat(formData.unit_price),
+        quantity,
+        unit_price: unitPrice,
       });
 
+      removeOrder(optimisticId);
+      upsertOrder(createdOrder, { position: 'start' });
+      setFocusedOrderId(createdOrder.id);
       setFormData(INITIAL_FORM_STATE);
       setShowForm(false);
-      await reset();
     } catch (error) {
       console.error(error);
+      removeOrder(optimisticId);
       setUiError('Failed to create purchase order.');
     }
   };
@@ -175,18 +339,13 @@ const PurchaseOrdersPage = () => {
   }, [pendingDelete]);
 
   const handleRemoveAnimationComplete = useCallback(
-    async (orderId) => {
+    (orderId) => {
       removeOrder(orderId);
+      optimisticRemovalsRef.current.delete(orderId);
       setRemovingOrderIds((prev) => prev.filter((current) => current !== orderId));
-
-      try {
-        await reset();
-      } catch (error) {
-        console.error(error);
-        setUiError('Failed to refresh purchase orders.');
-      }
+      setFocusedOrderId((prev) => (prev === orderId ? null : prev));
     },
-    [removeOrder, reset, setUiError],
+    [removeOrder],
   );
 
   const handleConfirmDelete = useCallback(async () => {
@@ -198,26 +357,39 @@ const PurchaseOrdersPage = () => {
     setFeedError(null);
     setIsProcessingDelete(true);
 
+    const orderToDelete = pendingDelete;
+    setPendingDelete(null);
+    optimisticRemovalsRef.current.set(orderToDelete.id, orderToDelete);
+
+    setRemovingOrderIds((prev) =>
+      prev.includes(orderToDelete.id) ? prev : [...prev, orderToDelete.id],
+    );
+
     try {
-      await deletePurchaseOrder(pendingDelete.id);
-      setRemovingOrderIds((prev) =>
-        prev.includes(pendingDelete.id) ? prev : [...prev, pendingDelete.id],
-      );
+      await deletePurchaseOrder(orderToDelete.id);
       setToast({
         id: Date.now(),
         title: 'Purchase order deleted',
-        description: `${pendingDelete.item_name} has been removed.`,
+        description: `${orderToDelete.item_name} has been removed.`,
       });
-      setPendingDelete(null);
+      optimisticRemovalsRef.current.delete(orderToDelete.id);
     } catch (error) {
       console.error(error);
+      const original = optimisticRemovalsRef.current.get(orderToDelete.id);
+      if (original) {
+        upsertOrder(original, { position: 'start' });
+        optimisticRemovalsRef.current.delete(orderToDelete.id);
+      }
+      setRemovingOrderIds((prev) =>
+        prev.filter((current) => current !== orderToDelete.id),
+      );
+      setSwipeReset({ id: orderToDelete.id, key: Date.now() });
       setUiError('Failed to delete purchase order.');
-      setSwipeReset({ id: pendingDelete.id, key: Date.now() });
-      setPendingDelete(null);
+      setFocusedOrderId(orderToDelete.id);
     } finally {
       setIsProcessingDelete(false);
     }
-  }, [pendingDelete, setFeedError]);
+  }, [pendingDelete, setFeedError, upsertOrder]);
 
   const handleToggleForm = () => {
     setIsWorkspaceCollapsed(false);
@@ -243,6 +415,7 @@ const PurchaseOrdersPage = () => {
       setIsWorkspaceCollapsed(false);
       setSelectedOrder(order);
       setIsDetailsOpen(true);
+      setFocusedOrderId(order.id);
     },
     [],
   );
@@ -384,6 +557,78 @@ const PurchaseOrdersPage = () => {
                     </div>
                   </div>
 
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="relative flex items-center sm:col-span-2 lg:col-span-1">
+                      <span className="sr-only">Search purchase orders</span>
+                      <svg
+                        className="pointer-events-none absolute left-4 h-4 w-4 text-neutral-400 dark:text-neutral-500"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        aria-hidden="true"
+                      >
+                        <path
+                          d="M21 21l-4.35-4.35m1.35-4.65a6 6 0 11-12 0 6 6 0 0112 0z"
+                          stroke="currentColor"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="1.5"
+                        />
+                      </svg>
+                      <input
+                        type="search"
+                        value={searchTerm}
+                        onChange={handleSearchChange}
+                        placeholder="Search by item or ID"
+                        aria-label="Search purchase orders"
+                        className="w-full rounded-2xl border border-neutral-200 bg-white/80 py-2.5 pl-11 pr-4 text-sm text-neutral-700 shadow-sm transition-all duration-200 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-400/40 dark:border-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-100 dark:placeholder:text-neutral-500 dark:focus:border-neutral-500 dark:focus:ring-neutral-500/40"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400 transition-colors duration-200 dark:text-neutral-500">
+                        Status
+                      </span>
+                      <select
+                        value={statusFilter}
+                        onChange={handleStatusFilterChange}
+                        className="rounded-2xl border border-neutral-200 bg-white/80 px-3 py-2 text-sm text-neutral-700 shadow-sm transition-all duration-200 focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-400/40 dark:border-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-neutral-500/40"
+                      >
+                        {STATUS_FILTER_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {STATUS_LABELS[option]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-neutral-400 transition-colors duration-200 dark:text-neutral-500">
+                        Sort
+                      </span>
+                      <select
+                        value={sortOption}
+                        onChange={handleSortChange}
+                        className="rounded-2xl border border-neutral-200 bg-white/80 px-3 py-2 text-sm text-neutral-700 shadow-sm transition-all duration-200 focus:border-neutral-400 focus:outline-none focus:ring-2 focus:ring-neutral-400/40 dark:border-neutral-700 dark:bg-neutral-900/70 dark:text-neutral-100 dark:focus:border-neutral-500 dark:focus:ring-neutral-500/40"
+                      >
+                        {SORT_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {shouldShowResetView ? (
+                    <button
+                      type="button"
+                      onClick={handleResetFilters}
+                      className="inline-flex items-center justify-center rounded-full border border-neutral-300 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 transition-all duration-200 hover:border-neutral-400 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-600 dark:focus-visible:ring-offset-neutral-900"
+                    >
+                      Reset view
+                    </button>
+                  ) : null}
+                </div>
+
                   <dl
                     className={`grid transition-all duration-300 ${
                       isHeaderCondensed ? 'grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4' : 'gap-4 md:grid-cols-2 xl:grid-cols-4'
@@ -481,9 +726,29 @@ const PurchaseOrdersPage = () => {
                         </pre>
                       ) : null}
                     </div>
+                  ) : displayOrders.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-12 text-center text-neutral-500 transition-colors duration-300 dark:text-neutral-400">
+                      <div className="space-y-2">
+                        <h3 className="text-lg font-semibold text-neutral-800 dark:text-neutral-100">
+                          No purchase orders found
+                        </h3>
+                        <p className="text-sm">
+                          Adjust your search or filters to see matching purchase orders.
+                        </p>
+                      </div>
+                      {shouldShowResetView ? (
+                        <button
+                          type="button"
+                          onClick={handleResetFilters}
+                          className="inline-flex items-center justify-center rounded-full border border-neutral-300 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-neutral-500 transition-all duration-200 hover:border-neutral-400 hover:text-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:border-neutral-700 dark:text-neutral-400 dark:hover:border-neutral-500 dark:hover:text-neutral-100 dark:focus-visible:ring-neutral-600 dark:focus-visible:ring-offset-neutral-900"
+                        >
+                          Clear filters
+                        </button>
+                      ) : null}
+                    </div>
                   ) : (
                     <PurchaseOrdersList
-                      orders={orders}
+                      orders={displayOrders}
                       hasMore={hasMore}
                       isPrefetching={isPrefetching}
                       onLoadMore={prefetchNext}
@@ -494,6 +759,8 @@ const PurchaseOrdersPage = () => {
                       onRemovalAnimationComplete={handleRemoveAnimationComplete}
                       onOrderSelect={handleOrderSelect}
                       selectedOrderId={selectedOrder?.id ?? null}
+                      focusedOrderId={focusedOrderId}
+                      onFocusOrder={setFocusedOrderId}
                     />
                   )}
                 </div>

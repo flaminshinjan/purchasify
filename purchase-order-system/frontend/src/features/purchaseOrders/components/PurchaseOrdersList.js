@@ -1,103 +1,79 @@
-import React, { useCallback, useMemo } from 'react';
-import AutoSizer from 'react-virtualized-auto-sizer';
-import { FixedSizeList as List } from 'react-window';
+import React, { useEffect, useRef } from 'react';
 
 import PurchaseOrderCard from './PurchaseOrderCard';
-
-const ROW_HEIGHT = 132;
-const PREFETCH_THRESHOLD = 12;
-
-const FooterRow = ({ style, isPrefetching, hasMore }) => (
-  <div style={style} className="px-4 py-3">
-    <div className="flex h-full items-center justify-center rounded-lg border border-dashed border-gray-300 bg-white/60">
-      {isPrefetching && hasMore ? (
-        <div className="flex items-center gap-3 text-sm text-gray-600">
-          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full border-2 border-blue-500 border-r-transparent animate-spin" />
-          <span>Loading more orders…</span>
-        </div>
-      ) : hasMore ? (
-        <span className="text-sm text-gray-500">Scroll to load more orders</span>
-      ) : (
-        <span className="text-sm text-gray-400">You&apos;ve reached the end</span>
-      )}
-    </div>
-  </div>
-);
-
-const Row = ({ index, style, data }) => {
-  const { orders, onDelete, hasMore, isPrefetching } = data;
-
-  if (index >= orders.length) {
-    return <FooterRow style={style} isPrefetching={isPrefetching} hasMore={hasMore} />;
-  }
-
-  const order = orders[index];
-
-  return (
-    <div style={style} className="px-3 py-2">
-      <PurchaseOrderCard order={order} onDelete={onDelete} />
-    </div>
-  );
-};
 
 const PurchaseOrdersList = ({
   orders,
   hasMore,
   isPrefetching,
   onLoadMore,
-  onDelete = () => {},
-  height = '65vh',
-  minHeight = 420,
+  onDeleteRequest = () => {},
+  confirmingOrderId = null,
+  swipeReset = null,
+  removingOrderIds = [],
+  onRemovalAnimationComplete = () => {},
 }) => {
-  const handleItemsRendered = useCallback(
-    ({ visibleStopIndex }) => {
-      if (!hasMore || orders.length === 0) {
-        return;
-      }
+  const containerRef = useRef(null);
+  const sentinelRef = useRef(null);
 
-      if (visibleStopIndex >= orders.length - PREFETCH_THRESHOLD) {
-        onLoadMore?.();
-      }
-    },
-    [hasMore, orders.length, onLoadMore],
-  );
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
 
-  const itemData = useMemo(
-    () => ({
-      orders,
-      onDelete,
-      hasMore,
-      isPrefetching,
-    }),
-    [orders, onDelete, hasMore, isPrefetching],
-  );
+    if (!sentinel || !hasMore || !onLoadMore) {
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (entry?.isIntersecting && !isPrefetching) {
+          onLoadMore();
+        }
+      },
+      {
+        root: null,
+        rootMargin: '160px',
+      },
+    );
+
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, isPrefetching, onLoadMore, orders.length]);
 
   return (
-    <div className="bg-gray-50" style={{ height, minHeight }}>
-      <AutoSizer>
-        {(size) => {
-          const listHeight = Reflect.get(size, 'height');
-          const listWidth = Reflect.get(size, 'width');
-          const HEIGHT_PROP = 'height';
-          const WIDTH_PROP = 'width';
-          const listDimensions = {
-            [HEIGHT_PROP]: listHeight,
-            [WIDTH_PROP]: listWidth,
-          };
-          return (
-            <List
-              {...listDimensions}
-              itemCount={orders.length + (hasMore ? 1 : 0)}
-              itemSize={ROW_HEIGHT}
-              onItemsRendered={handleItemsRendered}
-              overscanCount={8}
-              itemData={itemData}
-            >
-              {Row}
-            </List>
-          );
-        }}
-      </AutoSizer>
+    <div
+      ref={containerRef}
+      className="bg-neutral-100 transition-colors duration-300 dark:bg-neutral-950"
+    >
+      <div className="grid items-stretch gap-6 p-6 [grid-template-columns:repeat(auto-fit,minmax(260px,1fr))] sm:p-8">
+        {orders.map((order) => (
+          <PurchaseOrderCard
+            key={order.id}
+            order={order}
+            onDeleteRequest={onDeleteRequest}
+            isConfirming={confirmingOrderId === order.id}
+            resetSignal={
+              swipeReset && swipeReset.id === order.id ? swipeReset.key : null
+            }
+            isRemoving={removingOrderIds.includes(order.id)}
+            onRemovalAnimationComplete={onRemovalAnimationComplete}
+          />
+        ))}
+      </div>
+      <div
+        ref={sentinelRef}
+        className="flex items-center justify-center px-4 pb-6 text-sm text-neutral-500 transition-colors duration-300 dark:text-neutral-400"
+      >
+        {hasMore ? (
+          <span className="inline-flex items-center gap-2 rounded-full border border-neutral-300 px-3 py-1 text-xs font-medium uppercase tracking-wide text-neutral-500 transition-colors duration-200 dark:border-neutral-700 dark:text-neutral-400">
+            {isPrefetching ? 'Loading more orders…' : 'Scroll to load more'}
+          </span>
+        ) : (
+          <span className="text-xs uppercase tracking-wide text-neutral-400 dark:text-neutral-600">
+            All orders loaded
+          </span>
+        )}
+      </div>
     </div>
   );
 };
